@@ -47,7 +47,7 @@ jobs:
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
-        API_KEY: test-api-key
+        API_KEY:  ${{ env.API_KEY }}
       run: |
         python -m pytest tests/ -v --cov=app --cov-report=xml
 
