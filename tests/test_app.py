@@ -267,7 +267,8 @@ class TestErrorHandling:
         """Test generic exception handler."""
         mock_redis.get.side_effect = Exception("Unexpected error")
         
-        response = client.get('/read')
+        headers = {'X-API-Key': 'test-api-key'}
+        response = client.get('/read', headers=headers)
         assert response.status_code == 500
         
         data = json.loads(response.data)
@@ -285,30 +286,33 @@ class TestIntegration:
             test_redis.ping()
         except redis.RedisError:
             pytest.skip("Redis not available for integration tests")
-        
+
         # Clean up test data
         test_redis.delete(COUNTER_KEY)
-        
+
+        # Set up headers with API key
+        headers = {'X-API-Key': 'test-api-key'}
+
         # Test read (should initialize to 0)
-        response = client.get('/read')
+        response = client.get('/read', headers=headers)
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data['value'] == 0
-        
+
         # Test write (should increment to 1)
-        response = client.post('/write')
+        response = client.post('/write', headers=headers)
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data['value'] == 1
         
         # Test read again (should be 1)
-        response = client.get('/read')
+        response = client.get('/read', headers=headers)
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data['value'] == 1
         
         # Test reset (should go back to 0)
-        response = client.post('/reset')
+        response = client.post('/reset', headers=headers)
         assert response.status_code == 200
         data = json.loads(response.data)
         assert data['value'] == 0
