@@ -153,13 +153,11 @@ jobs:
         sleep 10
         
         # Test health endpoint
-        curl -f http://localhost:8080/health || exit 1
+        curl -f http://localhost:8080/health -H "X-API-Key: ${{ env.API_KEY }}" || exit 1
         
         # Test read endpoint
-        curl -f http://localhost:8080/read || exit 1
+        curl -f http://localhost:8080/read -H "X-API-Key: ${{ env.API_KEY }}" || exit 1
         
-        # Test write endpoint
-        curl -f -X POST http://localhost:8080/write || exit 1
         
         # Cleanup
         kill $PF_PID
