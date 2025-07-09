@@ -1,0 +1,184 @@
+name: Build and Deploy Counter API
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: counter-api
+  EKS_CLUSTER_NAME: counter-api-cluster
+  KUBERNETES_NAMESPACE: counter-api
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov requests
+
+    - name: Run tests
+      env:
+        REDIS_HOST: localhost
+        REDIS_PORT: 6379
+      run: |
+        python -m pytest tests/ -v --cov=app --cov-report=xml
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and push Docker image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        
+        # Push image
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        
+        # Output image URI for next job
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      id: build
+
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+    - name: Deploy to EKS
+      env:
+        IMAGE_URI: ${{ needs.build.outputs.image }}
+      run: |
+        # Update deployment with new image
+        sed -i "s|image: counter-api:latest|image: $IMAGE_URI|g" k8s/app-deployment.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/namespace.yaml
+        kubectl apply -f k8s/redis-deployment.yaml
+        kubectl apply -f k8s/redis-service.yaml
+        kubectl apply -f k8s/app-deployment.yaml
+        kubectl apply -f k8s/app-service.yaml
+        kubectl apply -f k8s/ingress.yaml
+        
+        # Wait for deployment to be ready
+        kubectl rollout status deployment/counter-api -n ${{ env.KUBERNETES_NAMESPACE }} --timeout=300s
+        kubectl rollout status deployment/redis -n ${{ env.KUBERNETES_NAMESPACE }} --timeout=180s
+
+    - name: Verify deployment
+      run: |
+        kubectl get pods -n ${{ env.KUBERNETES_NAMESPACE }}
+        kubectl get services -n ${{ env.KUBERNETES_NAMESPACE }}
+        kubectl get ingress -n ${{ env.KUBERNETES_NAMESPACE }}
+
+    - name: Run smoke tests
+      run: |
+        # Wait for service to be ready
+        kubectl wait --for=condition=ready pod -l app=counter-api -n ${{ env.KUBERNETES_NAMESPACE }} --timeout=300s
+        
+        # Port forward for testing
+        kubectl port-forward -n ${{ env.KUBERNETES_NAMESPACE }} service/counter-api-service 8080:80 &
+        PF_PID=$!
+        sleep 10
+        
+        # Test health endpoint
+        curl -f http://localhost:8080/health || exit 1
+        
+        # Test read endpoint
+        curl -f http://localhost:8080/read || exit 1
+        
+        # Test write endpoint
+        curl -f -X POST http://localhost:8080/write || exit 1
+        
+        # Cleanup
+        kill $PF_PID
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ needs.build.outputs.image }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif' 
