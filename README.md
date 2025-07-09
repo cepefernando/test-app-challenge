@@ -482,6 +482,8 @@ kubectl port-forward -n counter-api service/counter-api-service 8080:80
 - [Docker Best Practices](https://docs.docker.com/develop/dev-best-practices/)
 
 # To do
+- Add TLS/SSL on the endpoints via ACM and ALB Controller
 - Implement Terraform for the infrastucture
 - Implement Monitoring and Alerting for the services and infrastructure
 - Implement Helm for deployment
+- Implement ArgoCD
