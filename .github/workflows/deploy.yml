@@ -11,6 +11,7 @@ env:
   ECR_REPOSITORY: counter-api
   EKS_CLUSTER_NAME: counter-api-cluster
   KUBERNETES_NAMESPACE: counter-api
+  API_KEY: ${{ secrets.API_KEY }}
 
 jobs:
   test:
@@ -46,6 +47,7 @@ jobs:
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
+        API_KEY: test-api-key
       run: |
         python -m pytest tests/ -v --cov=app --cov-report=xml
 

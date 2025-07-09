@@ -35,6 +35,11 @@ spec:
           value: "5000"
         - name: DEBUG
           value: "false"
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: counter-api-key
+              key: api-key
         resources:
           requests:
             memory: "64Mi"

@@ -5,18 +5,71 @@ import os
 from unittest.mock import patch, MagicMock
 from app import app, redis_client, COUNTER_KEY
 
+TEST_API_KEY = 'test-api-key'
+
 @pytest.fixture
 def client():
     """Create test client."""
     app.config['TESTING'] = True
+    # Set test API key
+    os.environ['API_KEY'] = TEST_API_KEY
     with app.test_client() as client:
         yield client
+    # Clean up
+    os.environ.pop('API_KEY', None)
+
+@pytest.fixture
+def auth_headers():
+    """Return headers with API key."""
+    return {'X-API-Key': TEST_API_KEY}
 
 @pytest.fixture
 def mock_redis():
     """Mock Redis client."""
     with patch('app.redis_client') as mock:
         yield mock
+
+class TestAuthentication:
+    """Test cases for API key authentication."""
+    
+    def test_missing_api_key(self, client):
+        """Test endpoints without API key."""
+        # Health endpoint should work without API key
+        response = client.get('/health')
+        assert response.status_code == 200
+        
+        # Other endpoints should require API key
+        endpoints = [
+            ('GET', '/read'),
+            ('POST', '/write'),
+            ('POST', '/reset')
+        ]
+        for method, endpoint in endpoints:
+            if method == 'GET':
+                response = client.get(endpoint)
+            else:
+                response = client.post(endpoint)
+            assert response.status_code == 401
+            data = json.loads(response.data)
+            assert data['error'] == 'API key required'
+    
+    def test_invalid_api_key(self, client):
+        """Test endpoints with invalid API key."""
+        headers = {'X-API-Key': 'invalid-key'}
+        
+        endpoints = [
+            ('GET', '/read'),
+            ('POST', '/write'),
+            ('POST', '/reset')
+        ]
+        for method, endpoint in endpoints:
+            if method == 'GET':
+                response = client.get(endpoint, headers=headers)
+            else:
+                response = client.post(endpoint, headers=headers)
+            assert response.status_code == 403
+            data = json.loads(response.data)
+            assert data['error'] == 'Invalid API key'
 
 class TestCounterAPI:
     """Test cases for Counter API endpoints."""
@@ -45,12 +98,12 @@ class TestCounterAPI:
         assert data['redis'] == 'disconnected'
         assert 'error' in data
     
-    def test_read_counter_new_counter(self, client, mock_redis):
+    def test_read_counter_new_counter(self, client, mock_redis, auth_headers):
         """Test reading counter when it doesn't exist (should initialize to 0)."""
         mock_redis.get.return_value = None
         mock_redis.set.return_value = True
         
-        response = client.get('/read')
+        response = client.get('/read', headers=auth_headers)
         assert response.status_code == 200
         
         data = json.loads(response.data)
@@ -61,33 +114,33 @@ class TestCounterAPI:
         mock_redis.get.assert_called_once_with(COUNTER_KEY)
         mock_redis.set.assert_called_once_with(COUNTER_KEY, 0)
     
-    def test_read_counter_existing_counter(self, client, mock_redis):
+    def test_read_counter_existing_counter(self, client, mock_redis, auth_headers):
         """Test reading existing counter value."""
         mock_redis.get.return_value = '42'
         
-        response = client.get('/read')
+        response = client.get('/read', headers=auth_headers)
         assert response.status_code == 200
         
         data = json.loads(response.data)
         assert data['value'] == 42
         assert 'timestamp' in data
     
-    def test_read_counter_redis_error(self, client, mock_redis):
+    def test_read_counter_redis_error(self, client, mock_redis, auth_headers):
         """Test reading counter with Redis error."""
         mock_redis.get.side_effect = redis.RedisError("Redis error")
         
-        response = client.get('/read')
+        response = client.get('/read', headers=auth_headers)
         assert response.status_code == 503
         
         data = json.loads(response.data)
         assert data['error'] == 'Database connection error'
         assert 'timestamp' in data
     
-    def test_write_counter_increment(self, client, mock_redis):
+    def test_write_counter_increment(self, client, mock_redis, auth_headers):
         """Test incrementing counter."""
         mock_redis.incr.return_value = 5
         
-        response = client.post('/write')
+        response = client.post('/write', headers=auth_headers)
         assert response.status_code == 200
         
         data = json.loads(response.data)
@@ -98,22 +151,22 @@ class TestCounterAPI:
         # Verify Redis operation
         mock_redis.incr.assert_called_once_with(COUNTER_KEY)
     
-    def test_write_counter_redis_error(self, client, mock_redis):
+    def test_write_counter_redis_error(self, client, mock_redis, auth_headers):
         """Test incrementing counter with Redis error."""
         mock_redis.incr.side_effect = redis.RedisError("Redis error")
         
-        response = client.post('/write')
+        response = client.post('/write', headers=auth_headers)
         assert response.status_code == 503
         
         data = json.loads(response.data)
         assert data['error'] == 'Database connection error'
         assert 'timestamp' in data
     
-    def test_reset_counter(self, client, mock_redis):
+    def test_reset_counter(self, client, mock_redis, auth_headers):
         """Test resetting counter to zero."""
         mock_redis.set.return_value = True
         
-        response = client.post('/reset')
+        response = client.post('/reset', headers=auth_headers)
         assert response.status_code == 200
         
         data = json.loads(response.data)
@@ -124,11 +177,11 @@ class TestCounterAPI:
         # Verify Redis operation
         mock_redis.set.assert_called_once_with(COUNTER_KEY, 0)
     
-    def test_reset_counter_redis_error(self, client, mock_redis):
+    def test_reset_counter_redis_error(self, client, mock_redis, auth_headers):
         """Test resetting counter with Redis error."""
         mock_redis.set.side_effect = redis.RedisError("Redis error")
         
-        response = client.post('/reset')
+        response = client.post('/reset', headers=auth_headers)
         assert response.status_code == 503
         
         data = json.loads(response.data)

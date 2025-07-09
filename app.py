@@ -10,6 +10,7 @@ import redis
 from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 import time
+from functools import wraps
 
 # Configure logging
 logging.basicConfig(
@@ -25,9 +26,35 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_DB = int(os.getenv('REDIS_DB', 0))
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+API_KEY = os.getenv('API_KEY')  # Required API key for authentication
 COUNTER_KEY = 'api_counter'
 MAX_RETRIES = 3
 RETRY_DELAY = 0.5
+
+if not API_KEY:
+    logger.warning("No API_KEY environment variable set. This is required for production!")
+    if os.getenv('FLASK_ENV') == 'production':
+        raise ValueError("API_KEY environment variable must be set in production!")
+
+def require_api_key(f):
+    """Decorator to require API key authentication."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        provided_key = request.headers.get('X-API-Key')
+        if not provided_key:
+            logger.warning("API request missing X-API-Key header")
+            return jsonify({
+                'error': 'API key required',
+                'timestamp': time.time()
+            }), 401
+        if provided_key != API_KEY:
+            logger.warning("Invalid API key provided")
+            return jsonify({
+                'error': 'Invalid API key',
+                'timestamp': time.time()
+            }), 403
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Initialize Redis connection with retry logic
 def get_redis_client():
@@ -79,6 +106,7 @@ def health_check():
         }), 503
 
 @app.route('/read', methods=['GET'])
+@require_api_key
 def read_counter():
     """Read the current counter value from Redis."""
     try:
@@ -112,6 +140,7 @@ def read_counter():
         }), 500
 
 @app.route('/write', methods=['POST'])
+@require_api_key
 def write_counter():
     """Increment the counter value in Redis."""
     try:
@@ -141,6 +170,7 @@ def write_counter():
         }), 500
 
 @app.route('/reset', methods=['POST'])
+@require_api_key
 def reset_counter():
     """Reset the counter to zero (useful for testing)."""
     try:
